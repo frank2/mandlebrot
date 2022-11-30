@@ -1,0 +1,3 @@
+[submodule "lib/intervaltree"]
+	path = lib/intervaltree
+	url = https://github.com/frank2/intervaltree.git
