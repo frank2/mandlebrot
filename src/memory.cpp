@@ -1,5 +1,5 @@
-#include <mandlebrot.hpp>
+#include <parfait.hpp>
 
-using namespace mandlebrot;
+using namespace parfait;
 
 std::unique_ptr<Memory::Manager> Memory::Manager::Instance;

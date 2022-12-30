@@ -1,5 +1,5 @@
-#ifndef __MANDLEBROT_MEMORY_H
-#define __MANDLEBROT_MEMORY_H
+#ifndef __PARFAIT_MEMORY_H
+#define __PARFAIT_MEMORY_H
 
 #include <cstdint>
 #include <cstddef>
@@ -14,9 +14,9 @@
 
 #include <intervaltree.hpp>
 
-#include <mandlebrot/exception.hpp>
+#include <parfait/exception.hpp>
 
-namespace mandlebrot
+namespace parfait
 {
    template <typename ValueType, bool Inclusive=false>
    using Interval = intervaltree::Interval<ValueType, Inclusive>;
@@ -26,7 +26,7 @@ namespace mandlebrot
    public:
       using IntervalType = Interval<std::uintptr_t>;
       
-   private:
+   protected:
       class Manager
       {
       public:
@@ -55,28 +55,18 @@ namespace mandlebrot
          public:
             MemoryMap() : IntervalMap() {}
             MemoryMap(const MemoryMap &other) : IntervalMap(other) {}
-            
-            void declare(Memory *object) {
-               auto key = object->interval();
-               (*this)[key].objects.insert(object);
+
+            void ref(IntervalType key) {
+               // std::cout << "Ref: " << std::hex << key.low << "," << key.high << std::endl;
                ++(*this)[key].refcount;
-            }
 
-            void declare_child(const Memory *parent, const Memory *child) {
-               auto parent_key = parent->interval();
-               auto child_key = child->interval();
-
-               (*this)[parent_key].children.insert(child_key);
-               (*this)[child_key].parent = parent_key;
-
-               for (auto parent=(*this)[child_key].parent; parent.has_value(); parent=(*this)[*parent].parent)
+               for (auto parent=(*this)[key].parent; parent.has_value(); parent=(*this)[*parent].parent)
                   ++(*this)[*parent].refcount;
             }
 
-            void destroy(const Memory *object) {
-               auto key = object->interval();
+            void deref(IntervalType key) {
+               // std::cout << "Deref: " << std::hex << key.low << "," << key.high << std::endl;
                auto invalidated = std::vector<IntervalType>();
-               (*this)[key].objects.erase(const_cast<Memory *>(object));
 
                for (std::optional<IntervalType> node=key; node.has_value(); node=(*this)[*node].parent)
                {
@@ -88,12 +78,50 @@ namespace mandlebrot
                   this->invalidate(region);
             }
 
+            void declare(Memory *object) {
+               // std::cout << "Declare: " << std::hex << object->interval().low << "," << object->interval().high << std::endl;
+               auto key = object->interval();
+               (*this)[key].objects.insert(object);
+               this->ref(key);
+            }
+
+            void declare_child(const Memory *parent, const Memory *child) {
+               this->declare_child(parent->interval(), child);
+            }
+
+            void declare_child(IntervalType parent_key, const Memory *child) {
+               auto child_key = child->interval();
+               // std::cout << "Declare child: " << std::hex
+               //           << parent_key.low << "," << parent_key.high
+               //           << " => "
+               //           << child_key.low << "," << child_key.high << std::endl;
+
+               if (child_key == parent_key) { return; }
+               
+               (*this)[parent_key].children.insert(child_key);
+               (*this)[child_key].parent = parent_key;
+
+               this->ref(parent_key);
+            }
+
+            void destroy(const Memory *object) {
+               auto key = object->interval();
+               // std::cout << "Destroy: " << std::hex << key.low << "," << key.high << std::endl;
+               if (!this->contains(key)) { return; }
+               (*this)[key].objects.erase(const_cast<Memory *>(object));
+               this->deref(key);
+            }
+
             void invalidate(const Memory *object) {
                this->invalidate(object->interval());
             }
 
             void invalidate(IntervalType invalid) {
-               if (this->has_interval(invalid) && (*this)[invalid].parent.has_value())
+               if (!this->has_interval(invalid)) { return; }
+
+               // std::cout << "Invalidate: " << std::hex << invalid.low << "," << invalid.high << std::endl;
+               
+               if ((*this)[invalid].parent.has_value())
                   (*this)[*(*this)[invalid].parent].children.remove(invalid);
                
                for (auto child : (*this)[invalid].children)
@@ -122,24 +150,49 @@ namespace mandlebrot
                {
                   auto region = region_stack.front();
                   region_stack.erase(region_stack.begin());
-                  
+
                   IntervalType moved_region;
 
-                  if (deleted_interval.has_value() && region.contains(deleted_interval->low))
+                  if (region == from_interval)
+                  {
+                     moved_region = to_interval;
+                  }
+                  else if (deleted_interval.has_value() && region.contains(deleted_interval->low))
                   {
                      moved_region = IntervalType(region.low+ptr_delta, deleted_interval->low+ptr_delta);
                   }
-                  else {
+                  else
+                  {
                      moved_region = IntervalType(region.low+ptr_delta, region.high+ptr_delta);
                   }
 
                   auto old_info = (*this)[region];
-                  (*this)[moved_region] = (*this)[region];
+
+                  if (this->contains(moved_region))
+                  {
+                     for (auto object : old_info.objects)
+                     {
+                        (*this)[moved_region].objects.insert(object);
+                        this->ref(moved_region);
+                     }
+                     
+                     for (auto child : old_info.children)
+                     {
+                        if (child == moved_region)
+                           continue;
+
+                        (*this)[moved_region].children.insert(child);
+
+                        for (std::size_t i=0; i<(*this)[child].refcount; ++i)
+                           this->ref(moved_region);
+                     }
+                  }
+                  else { (*this)[moved_region] = old_info; }
                   
                   for (auto object : (*this)[moved_region].objects)
                   {
                      object->lock();
-                     object->pointer.m = reinterpret_cast<void *>(reinterpret_cast<std::uintptr_t>(object->pointer.m)+ptr_delta);
+                     object->pointer.m = reinterpret_cast<void *>(moved_region.low);
                      object->_size = moved_region.size();
                      object->unlock();
                   }
@@ -148,6 +201,11 @@ namespace mandlebrot
 
                   for (auto child_region : (*this)[moved_region].children)
                   {
+                     if (moved_region == child_region)
+                     {
+                        continue;
+                     }
+                     
                      region_stack.push_back(child_region);
                      (*this)[child_region].parent = moved_region;
 
@@ -158,7 +216,7 @@ namespace mandlebrot
                      else {
                         child_region = IntervalType(child_region.low+ptr_delta, child_region.high+ptr_delta);
                      }
-
+                     
                      new_children.insert(child_region);
                   }
 
@@ -177,7 +235,7 @@ namespace mandlebrot
          Manager() {}
 
       public:
-         static Manager &GetInstance() {
+         static Manager &get_instance() {
             if (Manager::Instance == nullptr)
                Manager::Instance = std::unique_ptr<Manager>(new Manager());
 
@@ -192,7 +250,7 @@ namespace mandlebrot
             this->object_mutexes[object].unlock();
          }
 
-         bool validate(const void *ptr, std::size_t size) {
+         bool has_interval(const void *ptr, std::size_t size) {
             auto base = reinterpret_cast<std::uintptr_t>(ptr);
             auto key = Memory::IntervalType(base, base+size);
 
@@ -224,6 +282,17 @@ namespace mandlebrot
             return result;
          }
 
+         MemoryMap::SetType containing(const void *ptr, std::size_t size) {
+            auto base = reinterpret_cast<std::uintptr_t>(ptr);
+            auto key = Memory::IntervalType(base, base+size);
+
+            this->map_mutex.lock();
+            auto result = this->memory_map.containing_interval(key);
+            this->map_mutex.unlock();
+
+            return result;
+         }
+
          void declare(Memory *object) {
             this->map_mutex.lock();
             this->memory_map.declare(object);
@@ -236,13 +305,24 @@ namespace mandlebrot
             this->map_mutex.unlock();
          }
 
+         void declare_child(IntervalType parent_key, Memory *child) {
+            this->map_mutex.lock();
+            this->memory_map.declare_child(parent_key, child);
+            this->map_mutex.unlock();
+         }
+
          void destroy(const Memory *object) {
             this->map_mutex.lock();
             this->memory_map.destroy(object);
             this->map_mutex.unlock();
 
-            if (this->object_mutexes.find(object) != this->object_mutexes.end())
+            // if the mutex is locked, we're in the middle of modifying the object,
+            // so don't destroy the mutex
+            if (this->object_mutexes.find(object) != this->object_mutexes.end() && this->object_mutexes[object].try_lock())
+            {
+               this->object_mutexes[object].unlock();
                this->object_mutexes.erase(object);
+            }
          }
 
          void invalidate(const Memory *object) {
@@ -250,8 +330,11 @@ namespace mandlebrot
             this->memory_map.invalidate(object);
             this->map_mutex.unlock();
 
-            if (this->object_mutexes.find(object) != this->object_mutexes.end())
+            if (this->object_mutexes.find(object) != this->object_mutexes.end() && this->object_mutexes[object].try_lock())
+            {
+               this->object_mutexes[object].unlock();
                this->object_mutexes.erase(object);
+            }
          }
 
          void move(Memory *object, void *ptr, std::size_t size) {
@@ -259,20 +342,47 @@ namespace mandlebrot
             this->memory_map.move(object, ptr, size);
             this->map_mutex.unlock();
          }
+
+         std::optional<IntervalType> parent(const Memory *object) {
+            if (!this->has_interval(object->pointer.c, object->_size)) { return std::nullopt; }
+
+            auto key = object->interval();
+
+            this->map_mutex.lock();
+            auto parent = this->memory_map[key].parent;
+            this->map_mutex.unlock();
+
+            return parent;
+         }
+
+         bool has_object(const Memory *object) {
+            auto key = object->interval();
+
+            this->map_mutex.lock();
+            auto has_interval = this->memory_map.has_interval(key);
+            
+            if (!has_interval) {
+               this->map_mutex.unlock();
+               return false;
+            }
+
+            auto result = this->memory_map[key].objects.find(const_cast<Memory *>(object)) != this->memory_map[key].objects.end();
+            this->map_mutex.unlock();
+
+            return result;
+         }
       };
       
-   protected:
       union {
          const void *c;
          void *m;
       } pointer;
       std::size_t _size;
 
-      Manager &manager() const { return Manager::GetInstance(); }
-      bool is_valid() const { return this->manager().validate(this->pointer.c, this->_size); }
+      Manager &manager() const { return Manager::get_instance(); }
       void lock() const { this->manager().lock(this); }
       void unlock() const { this->manager().unlock(this); }
-      
+
    public:
       friend class Manager;
       friend class Manager::MemoryMap;
@@ -281,7 +391,7 @@ namespace mandlebrot
       Memory(void *pointer, std::size_t size) : _size(size) { this->pointer.m = pointer; this->manager().declare(this); }
       Memory(const void *pointer, std::size_t size) : _size(size) { this->pointer.c = pointer; this->manager().declare(this); }
       Memory(const Memory &other) : _size(other._size) { this->pointer.m = other.pointer.m; this->manager().declare(this); }
-      virtual ~Memory() { this->manager().destroy(this); }
+      virtual ~Memory() { if (this->manager().has_object(this)) { this->manager().destroy(this); } }
 
       IntervalType interval() const {
          auto base = reinterpret_cast<std::uintptr_t>(this->pointer.c);
@@ -290,27 +400,40 @@ namespace mandlebrot
 
       void set_memory(void *pointer, std::size_t size)
       {
+         this->lock();
+         
          if (this->is_valid())
             this->manager().destroy(this);
          
          this->pointer.m = pointer;
          this->_size = size;
 
-         this->manager().declare(this);
+         if (pointer != nullptr)
+            this->manager().declare(this);
+
+         this->unlock();
       }
 
       void set_memory(const void *pointer, std::size_t size)
       {
+         this->lock();
+         
          if (this->is_valid())
             this->manager().destroy(this);
 
          this->pointer.c = pointer;
          this->_size = size;
 
-         this->manager().declare(this);
+         if (pointer != nullptr)
+            this->manager().declare(this);
+
+         this->unlock();
       }
 
-      inline bool is_empty() { return this->_size == 0; }
+      bool is_valid() const { return this->manager().contains(this->pointer.c, this->_size); }
+      bool is_declared() const { return this->manager().has_interval(this->pointer.c, this->_size); }
+      inline bool is_empty() const { return this->_size == 0; }
+      inline bool is_null() const { return this->pointer.c == nullptr; }
       inline void *eob() { return reinterpret_cast<void *>(reinterpret_cast<std::uintptr_t>(this->pointer.m)+this->_size); }
       inline const void *eob() const { return reinterpret_cast<const void *>(reinterpret_cast<std::uintptr_t>(this->pointer.c)+this->_size); }
       void *ptr(std::size_t offset=0) {
@@ -364,8 +487,6 @@ namespace mandlebrot
          return result;
       }
       inline std::size_t size(void) const { return this->_size; }
-      inline virtual std::size_t byte_size(void) const { return this->_size; }
-      inline virtual std::size_t element_size(void) const { return this->_size; }
 
       template <typename T>
       T* cast_ptr(std::size_t offset=0) {
@@ -407,7 +528,7 @@ namespace mandlebrot
          return this->aligns_with(sizeof(T));
       }
 
-      bool validate_range(std::size_t offset, std::size_t size) {
+      bool validate_range(std::size_t offset, std::size_t size) const {
          auto base = this->interval();
          auto interval = IntervalType(base.low+offset,base.low+offset+size);
          return this->interval().contains(interval);
@@ -476,16 +597,6 @@ namespace mandlebrot
       }
 
       template <typename T>
-      void write(std::size_t offset, const std::vector<T> &vec)
-      {
-         this->write<T>(offset, vec.data(), vec.size());
-      }
-
-      void write(std::size_t offset, const Memory &memory) {
-         this->write<void>(offset, memory.ptr(), memory.byte_size());
-      }
-
-      template <typename T>
       void start_with(const T* pointer, std::size_t size) {
          this->write<T>(0, pointer, size);
       }
@@ -498,15 +609,6 @@ namespace mandlebrot
       template <typename T>
       void start_with(const T& ref) {
          this->write<T>(&ref);
-      }
-
-      template <typename T>
-      void start_with(const std::vector<T> &vec) {
-         this->write<T>(0, vec);
-      }
-
-      void start_with(const Memory &memory) {
-         this->write(0, memory);
       }
 
       template <typename T>
@@ -530,15 +632,6 @@ namespace mandlebrot
       template <typename T>
       void end_with(const T& ref) {
          this->end_with<T>(&ref);
-      }
-
-      template <typename T>
-      void end_with(const std::vector<T> &vec) {
-         this->end_with<T>(vec.data(), vec.size());
-      }
-
-      void end_with(const Memory &memory) {
-         this->end_with<void>(memory.ptr(), memory.byte_size());
       }
 
       template <typename T>
@@ -622,15 +715,6 @@ namespace mandlebrot
       }
 
       template <typename T>
-      std::vector<std::size_t> search(const std::vector<T> &vec) const {
-         return this->search<T>(vec.data(), vec.size());
-      }
-
-      std::vector<std::size_t> search(const Memory &memory) const {
-         return this->search<void>(memory.ptr(), memory.byte_size());
-      }
-
-      template <typename T>
       bool contains(const T* ptr, std::size_t size) const {
          return this->search<T>(ptr, size).size() > 0;
       }
@@ -645,17 +729,8 @@ namespace mandlebrot
          return this->contains<T>(&ref);
       }
 
-      template <typename T>
-      bool contains(const std::vector<T> &vec) {
-         return this->contains<T>(vec.data(), vec.size());
-      }
-
-      bool contains(const Memory &memory) const {
-         return this->contains<void>(memory.ptr(), memory.byte_size());
-      }
-
       std::pair<Memory,Memory> split_at(std::size_t midpoint) const {
-         if (midpoint > this->_size) { throw exception::OutOfBounds(midpoint, this->_size); }
+         if (midpoint >= this->_size) { throw exception::OutOfBounds(midpoint, this->_size); }
 
          auto left = this->subsection(0, midpoint);
          auto right = this->subsection(midpoint, this->_size-midpoint);
@@ -664,17 +739,21 @@ namespace mandlebrot
       }
 
       std::string to_hex(bool uppercase=false) const {
+         const static char upper[] = "0123456789ABCDEF";
+         const static char lower[] = "0123456789abcdef";
          std::stringstream stream;
-         stream << std::hex << std::setw(2) << std::setfill('0');
-
-         if (uppercase) { stream << std::uppercase; }
-
          auto ptr = this->cast_ptr<std::uint8_t>();
 
          this->lock();
          
          for (std::size_t i=0; i<this->_size; ++i)
-            stream << static_cast<unsigned int>(ptr[i]);
+         {
+            auto left = ptr[i] >> 4;
+            auto right = ptr[i] & 0xF;
+            
+            stream << ((uppercase) ? upper[left] : lower[left])
+                   << ((uppercase) ? upper[right] : lower[right]);
+         }
 
          this->unlock();
 

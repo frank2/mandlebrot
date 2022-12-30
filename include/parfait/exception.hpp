@@ -1,5 +1,5 @@
-#ifndef __MANDLEBROT_EXCEPTION_H
-#define __MANDLEBROT_EXCEPTION_H
+#ifndef __PARFAIT_EXCEPTION_H
+#define __PARFAIT_EXCEPTION_H
 
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +8,7 @@
 
 #include <intervaltree.hpp>
 
-namespace mandlebrot
+namespace parfait
 {
 namespace exception
 {
@@ -32,7 +32,7 @@ namespace exception
          stream << "Invalid pointer: the given pointer "
                 << std::hex << std::showbase << this->ptr
                 << " with the given size " << std::dec << std::noshowbase << this->size
-                << " was invalidated before use.";
+                << " was either never valid or was invalidated before use.";
 
          this->error = stream.str();
       }
@@ -72,6 +72,43 @@ namespace exception
 
          this->error = stream.str();
       }
+   };
+
+   class BadAlignment : public Exception
+   {
+   public:
+      std::size_t given;
+      std::size_t expected;
+
+      BadAlignment(std::size_t given, std::size_t expected) : given(given), expected(expected), Exception() {
+         std::stringstream stream;
+
+         stream << "Bad alignment: offset/size " << this->given
+                << " did not align with the expected boundary "
+                << this->expected;
+
+         this->error = stream.str();
+      }
+   };
+
+   class ZeroSize : public Exception
+   {
+   public:
+      ZeroSize() : Exception("Zero size: size was zero when expecting a non-zero value") {}
+   };
+
+   class NotAllocated : public Exception
+   {
+   public:
+      NotAllocated() : Exception("Not allocated: the operation couldn't be completed because "
+                                 "the memory object is not allocated.") {}
+   };
+
+   class PointerIsAllocated : public Exception
+   {
+   public:
+      PointerIsAllocated() : Exception("Pointer is allocated: the arithmetic operation could not be completed "
+                                       "because the pointer is allocated.") {}
    };
 }}
 
