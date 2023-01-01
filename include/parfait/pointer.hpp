@@ -108,12 +108,12 @@ namespace parfait
          return *ptr;
       }
 
-      T& operator[](std::intptr_t index)
+      T& operator[](std::size_t index)
       {
          return *((*this)+index);
       }
 
-      const T& operator[](std::intptr_t index) const
+      const T& operator[](std::size_t index) const
       {
          return *((*this)+index);
       }
@@ -154,10 +154,10 @@ namespace parfait
          else { TransparentMemory::reallocate(1); }
       }
 
-      inline T* eob() { return static_cast<T*>(TransparentMemory::eob()); }
-      inline const T* eob() const { return static_cast<T*>(TransparentMemory::eob()); }
-      T *ptr() { return static_cast<T*>(TransparentMemory::ptr()); }
-      const T *ptr() const { return static_cast<T*>(TransparentMemory::ptr()); }
+      inline T* eob() { return reinterpret_cast<T*>(TransparentMemory::eob()); }
+      inline const T* eob() const { return reinterpret_cast<T*>(TransparentMemory::eob()); }
+      T *ptr() { return reinterpret_cast<T*>(TransparentMemory::ptr()); }
+      const T *ptr() const { return reinterpret_cast<T*>(TransparentMemory::ptr()); }
 
       template <typename U>
       U* cast_ptr() { return TransparentMemory::cast_ptr<U>(); }

@@ -191,31 +191,31 @@ int test_array()
    COMPLETE();
 }
 
-/*
 struct VariadicStruct
 {
    std::uint32_t deadbeef;
-   std::uint8_t abad1dea[1];
+   std::uint16_t abad1dea[1];
 };
 
 int test_variadic()
 {
    INIT();
    
-   using VariadicType = Variadic<VariadicStruct, std::uint8_t, offsetof(VariadicStruct, abad1dea)>;
+   using VariadicType = Variadic<VariadicStruct, std::uint16_t, offsetof(VariadicStruct, abad1dea)>;
+
+   auto data = "\xde\xad\xbe\xef\xab\xad\x1d\xea\xde\xad\xbe\xa7\xde\xfa\xce\xd1";
+   Memory region(data, std::strlen(data));
    VariadicType variadic;
+   
    ASSERT_SUCCESS(variadic = VariadicType::from_memory(region, std::strlen(data)));
-   ASSERT(!Pointer<std::uint8_t>(&variadic->abad1dea[variadic.variadic_size()+1]).is_valid());
-   ASSERT(Pointer<std::uint8_t>(&variadic->abad1dea[variadic.variadic_size()]).is_valid());
-   ASSERT(variadic->abad1dea[variadic.variadic_size()] == 0xD1);
-
-   std::cout << "Size: " << variadic.size() << std::endl;
-   std::cout << "Variadic size: " << variadic.variadic_size() << std::endl;
-   std::cout << "abad1dea: " << std::hex << std::showbase << static_cast<int>(variadic->abad1dea[variadic.variadic_size()]) << std::endl;
-
+   ASSERT(variadic.variadic_size() == 6);
+   ASSERT(variadic->deadbeef == 0xEFBEADDE);
+   ASSERT(variadic[0] == 0xADAB);
+   ASSERT(variadic[2] == 0xADDE);
+   ASSERT_THROWS(variadic[variadic.variadic_size()] == 0xBAAD, exception::OutOfBounds);
+   
    COMPLETE();
 }
-*/
 
 int
 main
@@ -237,6 +237,9 @@ main
 
    LOG_INFO("Testing Array objects.");
    PROCESS_RESULT(test_array);
+
+   LOG_INFO("Testing Variadic objects.");
+   PROCESS_RESULT(test_variadic);
 
    COMPLETE();
 }

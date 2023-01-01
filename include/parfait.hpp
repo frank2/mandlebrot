@@ -7,6 +7,6 @@
 #include <parfait/transparent.hpp>
 #include <parfait/pointer.hpp>
 #include <parfait/array.hpp>
-// #include <parfait/variadic.hpp>
+#include <parfait/variadic.hpp>
 
 #endif
